@@ -1,0 +1,6 @@
+node_modules
+dist
+.usda-cache
+*.local
+.env
+.dev.vars

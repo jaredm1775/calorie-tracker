@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "calorie-tracker",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "$env:PATH = \"$env:LOCALAPPDATA\\dev-tools\\node-v22.20.0-win-x64;\" + $env:PATH; npm run dev -- --port 5180 --strictPort"],
+      "port": 5180
+    }
+  ]
+}
