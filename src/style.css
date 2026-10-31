@@ -62,7 +62,8 @@ p {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
   min-height: 44px;
@@ -87,8 +88,48 @@ button.wide {
   width: 100%;
 }
 
+textarea {
+  resize: vertical;
+  min-height: 96px;
+}
+
+input[type="checkbox"] {
+  width: 20px;
+  min-height: 20px;
+  margin: 0;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check input {
+  margin-top: 0;
+}
+
+.review-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.review-item p {
+  margin: 0 0 8px;
+}
+
+.review-total {
+  position: sticky;
+  bottom: -16px;
+  background: var(--surface);
+  padding: 8px 0 0;
+}
+
 input,
-select {
+select,
+textarea {
   width: 100%;
   background: var(--bg);
   border: 1px solid var(--line);
@@ -109,7 +150,8 @@ label {
 }
 
 label input,
-label select {
+label select,
+label textarea {
   margin-top: 4px;
   color: var(--text);
   font-size: 1rem;
@@ -262,8 +304,8 @@ dialog::backdrop {
   border-radius: 10px;
 }
 
-.scanner[hidden] {
-  display: none;
+[hidden] {
+  display: none !important;
 }
 
 .dialog-head {

@@ -1,5 +1,6 @@
 import { barcodeFoodId, lookupBarcode, normalizeBarcode } from "./barcode";
 import { parseBackup } from "./backup";
+import { findFoods, gramsFor, MAX_DESCRIPTION_LENGTH, parseDescription, type ParsedItem } from "./describe";
 import {
   deleteEntry,
   deleteMyFood,
@@ -157,12 +158,213 @@ function openAddFood(): void {
     "Add food",
     h("button", { type: "button", className: "wide", click: () => void openScanner() }, "Scan a barcode"),
     h("div", { style: "height:8px" }),
+    h("button", { type: "button", className: "wide", click: () => openDescribe() }, "Describe a meal"),
+    h("div", { style: "height:8px" }),
     search,
     note,
     results,
     h("button", { type: "button", className: "wide", click: () => openFoodForm() }, "Add my own food"),
   );
   search.focus();
+}
+
+function openDescribe(savedText = ""): void {
+  const status = h("p", { className: "muted", role: "status" });
+  const textarea = h("textarea", {
+    name: "text",
+    required: true,
+    maxLength: MAX_DESCRIPTION_LENGTH,
+    value: savedText,
+    placeholder: "2 eggs, a slice of sourdough with butter, 200g rice",
+  }) as HTMLTextAreaElement;
+  openDialog(
+    "Describe a meal",
+    h(
+      "form",
+      {
+        submit: async (event: Event) => {
+          event.preventDefault();
+          const text = textarea.value.trim();
+          const foods = await allFoods();
+          const items = parseDescription(text, foods);
+          if (items.length === 0) {
+            status.textContent = "No foods found in that description. Try naming what you ate.";
+            return;
+          }
+          openReview(text, items, foods);
+        },
+      },
+      h("label", {}, "What did you eat?", textarea),
+      h("button", { type: "submit", className: "primary wide" }, "Find foods"),
+      status,
+      h(
+        "p",
+        { className: "muted" },
+        "Separate foods with commas, and add amounts like 2 eggs, 1 cup of rice or chicken 150g. This all happens on your device, and you check everything before it's logged.",
+      ),
+    ),
+  );
+  textarea.focus();
+}
+
+interface ReviewRow {
+  item: ParsedItem;
+  matches: Food[];
+  chosen: Food | null;
+  grams: number;
+  gramsEdited: boolean;
+  removed: boolean;
+}
+
+function openReview(text: string, items: ParsedItem[], foods: Food[]): void {
+  const rows: ReviewRow[] = items.map((item) => {
+    const matches = findFoods(item.query, foods);
+    const chosen = matches[0] ?? null;
+    return { item, matches, chosen, grams: chosen ? gramsFor(item.quantity, chosen) ?? 0 : 0, gramsEdited: false, removed: false };
+  });
+  const isReady = (row: ReviewRow) => row.chosen !== null && isValidGrams(row.grams);
+  const active = () => rows.filter((row) => !row.removed);
+  const total = h("p", { className: "big" });
+  const logButton = h("button", { type: "submit", className: "primary wide" }) as HTMLButtonElement;
+  const updateTotal = () => {
+    const ready = active().filter(isReady);
+    const sum = sumNutrients(ready.map((row) => nutrientsFor(row.chosen!.per100g, row.grams)));
+    total.textContent = `${round(sum.kcal)} kcal`;
+    logButton.textContent = `Log ${ready.length} ${ready.length === 1 ? "item" : "items"} to ${formatDate(state.date).toLowerCase()}`;
+    logButton.disabled = ready.length === 0 || ready.length < active().length;
+  };
+  const reviewRow = (row: ReviewRow): HTMLElement => {
+    const line = h("p", { className: "muted" });
+    const foodSelect = h("select", {
+      change: (event: Event) => {
+        const id = (event.target as HTMLSelectElement).value;
+        chooseFood(row.matches.find((food) => food.id === id) ?? null);
+      },
+    }) as HTMLSelectElement;
+    const portionSelect = h("select", {
+      change: (event: Event) => {
+        const value = (event.target as HTMLSelectElement).value;
+        if (value) setGrams(Number(value), true);
+      },
+    }) as HTMLSelectElement;
+    const portionLabel = h("label", {}, "Common portion (optional)", portionSelect);
+    const gramsInput = h("input", {
+      type: "number",
+      min: "0",
+      step: "any",
+      inputMode: "decimal",
+      required: true,
+      input: (event: Event) => {
+        row.grams = Number((event.target as HTMLInputElement).value);
+        row.gramsEdited = true;
+        update();
+      },
+    }) as HTMLInputElement;
+    const update = () => {
+      if (!row.chosen) line.textContent = "No match yet. Search for it above, or remove it.";
+      else if (!isValidGrams(row.grams)) line.textContent = "Enter a weight to log this.";
+      else {
+        const item = nutrientsFor(row.chosen.per100g, row.grams);
+        line.textContent = `${round(item.kcal)} kcal · ${macros(item)}`;
+      }
+      updateTotal();
+    };
+    const setGrams = (grams: number, edited: boolean) => {
+      row.grams = grams;
+      row.gramsEdited = edited;
+      gramsInput.value = grams > 0 ? String(grams) : "";
+      update();
+    };
+    const chooseFood = (food: Food | null) => {
+      row.chosen = food;
+      const portions = food?.portions ?? [];
+      portionLabel.hidden = portions.length === 0;
+      portionSelect.replaceChildren(
+        h("option", { value: "" }, "Enter weight below"),
+        ...portions.map((portion) => h("option", { value: String(portion.grams) }, `${portion.label} (${portion.grams}g)`)),
+      );
+      if (food && !row.gramsEdited) setGrams(gramsFor(row.item.quantity, food) ?? 0, false);
+      else update();
+    };
+    const showMatches = () => {
+      foodSelect.replaceChildren(
+        ...row.matches.map((food) => h("option", { value: food.id }, `${food.name} (${round(food.per100g.kcal)} kcal/100g)`)),
+      );
+      foodSelect.hidden = row.matches.length === 0;
+      chooseFood(row.matches[0] ?? null);
+    };
+    const element = h(
+      "div",
+      { className: "review-item" },
+      h("p", {}, row.item.text),
+      h(
+        "label",
+        {},
+        "Search for a different food",
+        h("input", {
+          type: "search",
+          value: row.item.query,
+          input: (event: Event) => {
+            row.matches = findFoods((event.target as HTMLInputElement).value.trim().toLowerCase(), foods);
+            showMatches();
+          },
+        }),
+      ),
+      h("label", {}, "Food", foodSelect),
+      portionLabel,
+      h("label", {}, "Weight (g)", gramsInput),
+      line,
+      h(
+        "button",
+        {
+          type: "button",
+          click: () => {
+            row.removed = true;
+            element.remove();
+            updateTotal();
+          },
+        },
+        "Remove",
+      ),
+    );
+    const initialGrams = row.grams;
+    showMatches();
+    setGrams(initialGrams, false);
+    return element;
+  };
+  const list = rows.map(reviewRow);
+  updateTotal();
+  openDialog(
+    "Check your foods",
+    h(
+      "form",
+      {
+        submit: async (event: Event) => {
+          event.preventDefault();
+          if (logButton.disabled) return;
+          logButton.disabled = true;
+          const createdAt = Date.now();
+          for (const [index, row] of active().entries()) {
+            await saveEntry({
+              ...nutrientsFor(row.chosen!.per100g, row.grams),
+              id: newId("entry"),
+              date: state.date,
+              foodId: row.chosen!.id,
+              name: row.chosen!.name,
+              grams: row.grams,
+              createdAt: createdAt + index,
+            });
+          }
+          dialog.close();
+          await render();
+        },
+      },
+      h("p", { className: "muted" }, "Portion weights are typical values, so adjust anything that looks off. Nothing is logged until you confirm."),
+      ...list,
+      h("div", { className: "review-total" }, total, logButton),
+      h("button", { type: "button", className: "wide", click: () => openDescribe(text) }, "Back to description"),
+    ),
+  );
 }
 
 async function openScanner(): Promise<void> {
