@@ -17,6 +17,19 @@ import {
 } from "./db";
 import { rowToFood, searchFoods, SOURCE_LABELS } from "./foods";
 import {
+  ACTIVITY_LABELS,
+  feetToCm,
+  isValidGoalInput,
+  MIN_AGE,
+  poundsToKg,
+  suggestGoals,
+  type Activity,
+  type Aim,
+  type GoalInput,
+  type GoalSuggestion,
+  type Sex,
+} from "./goals";
+import {
   isValidGrams,
   localDate,
   LOW_GOAL_KCAL,
@@ -838,6 +851,121 @@ function supportNote(): HTMLElement {
   );
 }
 
+function selectField(label: string, name: string, options: Record<string, string>): HTMLElement {
+  return h(
+    "label",
+    {},
+    label,
+    h(
+      "select",
+      { name, required: true },
+      h("option", { value: "" }, "Choose…"),
+      ...Object.entries(options).map(([value, text]) => h("option", { value }, text)),
+    ),
+  );
+}
+
+const LIMIT_NOTES = {
+  underweight: "Your weight is already in the underweight range, so this is a maintenance estimate rather than a loss target. A doctor or dietitian can help you choose a safe goal.",
+  minimum: "This is as low as the helper goes, so the loss will be slower than usual or none at all. A doctor or dietitian can help you choose a target.",
+};
+
+function goalResult(suggestion: GoalSuggestion, onUse: (goals: Goals) => void): HTMLElement {
+  const { goals, restingKcal, maintenanceKcal, limit } = suggestion;
+  return h(
+    "div",
+    { className: "card" },
+    h("div", { className: "big" }, `${goals.kcal} kcal`),
+    h("p", {}, `Protein ${goals.protein}g · Carbs ${goals.carbs}g · Fat ${goals.fat}g`),
+    h(
+      "p",
+      { className: "muted" },
+      `Estimated ${restingKcal} kcal at rest and about ${maintenanceKcal} kcal a day to stay the same weight (Mifflin-St Jeor). Real needs vary, so adjust if your weight trend says otherwise.`,
+    ),
+    limit ? h("p", { className: "error" }, LIMIT_NOTES[limit]) : null,
+    h("button", { type: "button", className: "primary wide", click: () => onUse(goals) }, "Use these numbers"),
+  );
+}
+
+function openGoalHelper(onUse: (goals: Goals) => void): void {
+  const metricFields = h(
+    "div",
+    { className: "grid", hidden: true },
+    numberField("Height (cm)", "cm", ""),
+    numberField("Weight (kg)", "kg", ""),
+  );
+  const usFields = h(
+    "div",
+    {},
+    h("div", { className: "grid" }, numberField("Height (ft)", "feet", "", "1"), numberField("Height (in)", "inches", "")),
+    numberField("Weight (lb)", "pounds", ""),
+  );
+  const showUnits = (metric: boolean) => {
+    metricFields.hidden = !metric;
+    usFields.hidden = metric;
+    // A hidden required field would block the form without showing why.
+    metricFields.querySelectorAll("input").forEach((input) => (input.disabled = !metric));
+    usFields.querySelectorAll("input").forEach((input) => (input.disabled = metric));
+  };
+  showUnits(false);
+  const result = h("div", { role: "status" });
+  const form = h(
+    "form",
+    {
+      submit: (event: Event) => {
+        event.preventDefault();
+        const data = new FormData(event.target as HTMLFormElement);
+        const metric = data.get("units") === "metric";
+        const input: GoalInput = {
+          age: Number(data.get("age")),
+          heightCm: metric ? Number(data.get("cm")) : feetToCm(Number(data.get("feet")), Number(data.get("inches"))),
+          weightKg: metric ? Number(data.get("kg")) : poundsToKg(Number(data.get("pounds"))),
+          sex: data.get("sex") as Sex,
+          activity: data.get("activity") as Activity,
+          aim: data.get("aim") as Aim,
+        };
+        if (input.age < MIN_AGE) {
+          result.replaceChildren(
+            h("p", { className: "error" }, `This helper is for adults ${MIN_AGE} and over. A doctor can advise on nutrition for younger people.`),
+          );
+        } else if (!isValidGoalInput(input)) {
+          result.replaceChildren(h("p", { className: "error" }, "Check your age, height and weight. One of them looks out of range."));
+        } else {
+          result.replaceChildren(goalResult(suggestGoals(input), onUse));
+        }
+        result.scrollIntoView({ block: "nearest" });
+      },
+    },
+    h(
+      "label",
+      {},
+      "Units",
+      h(
+        "select",
+        { name: "units", change: (event: Event) => showUnits((event.target as HTMLSelectElement).value === "metric") },
+        h("option", { value: "us" }, "lb, ft and in"),
+        h("option", { value: "metric" }, "kg and cm"),
+      ),
+    ),
+    h("div", { className: "grid" }, numberField("Age", "age", "", "1"), selectField("Sex (for the formula)", "sex", { female: "Female", male: "Male" })),
+    usFields,
+    metricFields,
+    selectField("Activity", "activity", ACTIVITY_LABELS),
+    selectField("Aim", "aim", { lose: "Lose weight gradually", maintain: "Stay about the same", gain: "Gain weight gradually" }),
+    h("button", { type: "submit", className: "wide" }, "Suggest goals"),
+  );
+  openDialog(
+    "Help me choose",
+    h(
+      "p",
+      { className: "muted" },
+      "A starting estimate for adults, not medical advice. If you're pregnant, breastfeeding, or managing a health condition, ask a doctor or dietitian instead. Nothing you enter here is saved.",
+    ),
+    form,
+    result,
+  );
+}
+
 async function settingsView(): Promise<HTMLElement[]> {
   const goals = await getGoals();
   const lowGoalNote = h(
@@ -873,6 +1001,15 @@ async function settingsView(): Promise<HTMLElement[]> {
     ),
     h("button", { type: "submit", className: "primary wide" }, "Save goals"),
   );
+  // Fills the form rather than saving, so the numbers can be changed first.
+  const fillGoals = (next: Goals) => {
+    for (const [name, value] of Object.entries(next)) {
+      goalsForm.querySelector<HTMLInputElement>(`[name=${name}]`)!.value = String(value);
+    }
+    lowGoalNote.hidden = next.kcal >= LOW_GOAL_KCAL;
+    message.textContent = "Suggested numbers filled in. Change anything you like, then save.";
+    dialog.close();
+  };
   const fileInput = h("input", {
     type: "file",
     accept: "application/json,.json",
@@ -894,6 +1031,7 @@ async function settingsView(): Promise<HTMLElement[]> {
     h("h1", {}, "Settings"),
     h("h2", {}, "Daily goals"),
     goalsForm,
+    h("button", { type: "button", className: "wide", style: "margin-top:8px", click: () => openGoalHelper(fillGoals) }, "Help me choose goals"),
     lowGoalNote,
     message,
     h("h2", {}, "Backup"),
